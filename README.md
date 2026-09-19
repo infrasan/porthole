@@ -23,9 +23,7 @@ It's a 3 MB native app. No Electron, no network access, no telemetry.
 
 ## Install
 
-Download the DMG from [Releases](../../releases), open it and drag Porthole to Applications.
-
-If the build isn't notarized yet, macOS will refuse to open it the first time. Open System Settings › Privacy & Security, scroll down and click **Open Anyway**.
+Download `Porthole-<version>.dmg` from the [latest release](https://github.com/infrasan/porthole/releases/latest), open it and drag Porthole to Applications. It's signed and notarized, so it opens without warnings.
 
 Requires macOS 14 or later.
 
