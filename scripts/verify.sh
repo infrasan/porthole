@@ -9,6 +9,10 @@ swift test -Xswiftc -warnings-as-errors | tee build/verification/tests.log
 .build/debug/Porthole --json > build/verification/scan.json
 chmod 600 build/verification/scan.json
 python3 -c 'import json; r=json.load(open("build/verification/scan.json")); assert r["version"] == 1 and not r.get("scanError")'
+if [ "${PORTHOLE_SKIP_SNAPSHOTS:-0}" = 1 ]; then
+    echo "Snapshots explicitly skipped for this host; build, tests and scan checks passed."
+    exit 0
+fi
 .build/debug/Porthole --snapshot build/verification/dark.png --demo --dark
 .build/debug/Porthole --snapshot build/verification/light.png --demo
 .build/debug/Porthole --snapshot build/verification/details.png --demo --dark --expand 4000

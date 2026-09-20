@@ -18,6 +18,10 @@ jobs:
         with:
           persist-credentials: false
       - name: Build, regressions and scan stability
+        env:
+          # This Intel VM aborts in Metal device initialization during ImageRenderer.
+          # Keep all tests/scan gates; render snapshots on the other two runners.
+          PORTHOLE_SKIP_SNAPSHOTS: ${{ matrix.os == 'macos-15-intel' && '1' || '0' }}
         run: scripts/verify.sh
       - name: Universal release package
         if: matrix.os == 'macos-latest'

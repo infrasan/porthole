@@ -137,7 +137,7 @@ python3 scripts/soak.py                       # 3-minute live soak after scripts
 
 For native panel QA, a debug build supports `PORTHOLE_OPEN_PANEL=1`. Add `PORTHOLE_DEMO_PANEL=1 PORTHOLE_DEMO_COUNT=100` for an inert, synthetic large inventory (counts from 0 to 100). Do not use demo mode to test real stop/start actions.
 
-GitHub Actions runs the verification script on macOS 14, current macOS, and an Intel runner. Only synthetic demo PNGs are uploaded. Real scan JSON and logs remain local. CI does not replace a live soak, manual keyboard/VoiceOver testing, or signing/notarization checks.
+GitHub Actions runs the verification script on macOS 14, current macOS, and an Intel runner. The Intel VM runs all tests and scan checks but explicitly skips ImageRenderer snapshots because its Metal device initialization aborts; the other runners render the previews. Only synthetic demo PNGs are uploaded. Real scan JSON and logs remain local. CI does not replace a live soak, manual keyboard/VoiceOver testing, or signing/notarization checks.
 
 ## Releasing
 
