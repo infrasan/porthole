@@ -1,0 +1,34 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build, regressions and scan stability
+        run: scripts/verify.sh
+      - name: Universal release package
+        if: matrix.os == 'macos-latest'
+        run: scripts/build.sh
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: synthetic-previews-${{ matrix.os }}
+          # Explicit demo-only allowlist. Never upload real scans or launch logs.
+          path: |
+            build/verification/dark.png
+            build/verification/light.png
+            build/verification/details.png
+          retention-days: 7

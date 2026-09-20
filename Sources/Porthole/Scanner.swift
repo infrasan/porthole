@@ -20,7 +20,7 @@ struct ProcDetail {
         return out
     }
 
-    var command: String { args.filter { !$0.isEmpty }.joined(separator: " ") }
+    var command: String { CommandPrivacy.display(args) }
 }
 
 /// Finds listening sockets and turns them into servers. Not thread-safe:
@@ -34,15 +34,52 @@ final class Scanner: @unchecked Sendable {
     var children: [pid_t: [pid_t]] = [:]
     var selfAncestors: Set<pid_t> = []
 
-    private var detailCache: [String: ProcDetail] = [:]
+    private var detailCache: [String: (detail: ProcDetail, at: TimeInterval)] = [:]
     var projectCache: [String: (info: ProjectInfo, at: Date)] = [:]
     private var argBuffer = [UInt8](repeating: 0, count: Sys.argMax())
+    /// `docker ps` is only worth its cost when a forwarder is actually listening.
+    private var dockerCache: [DockerDaemon: (inventory: DockerInventory, at: Date)] = [:]
+    var dockerInventoryProvider: ((String, String) -> DockerInventory)?
+    var detailProvider: ((pid_t) -> ProcDetail)?
+    /// Previous CPU sample per server id, so a percent can be diffed.
+    private var cpuCache: [String: (ns: UInt64, at: Date)] = [:]
+
+    func invalidateDockerInventory() { dockerCache = [:] }
+
+    func dockerContainers(executable: String, comm: String) -> DockerInventory {
+        if let dockerInventoryProvider { return dockerInventoryProvider(executable, comm) }
+        guard let daemon = DockerDaemon.resolve(executable: executable, comm: comm) else {
+            return DockerInventory(error: "No local Docker connection was found. Open the container manager and refresh.")
+        }
+        if let cached = dockerCache[daemon], Date().timeIntervalSince(cached.at) < 5 { return cached.inventory }
+        let inventory = Docker.containers(daemon: daemon)
+        dockerCache[daemon] = (inventory, Date())
+        return inventory
+    }
+
+    /// Percent of one core used since the previous scan (may exceed 100).
+    func cpuPercent(id: String, tree: [pid_t]) -> Int? {
+        let now = Date()
+        let ns = tree.reduce(0) { $0 + Sys.cpuNanoseconds($1) }
+        defer { cpuCache[id] = (ns, now) }
+        guard let previous = cpuCache[id] else { return nil }
+        let elapsed = now.timeIntervalSince(previous.at)
+        guard elapsed > 0.5 else { return nil }
+        // A child that died between scans lowers the tree's total; unsigned
+        // subtraction would underflow and trap.
+        let delta = ns >= previous.ns ? ns - previous.ns : 0
+        return Int((Double(delta) / 1_000_000_000) / elapsed * 100)
+    }
 
     /// Memory is only measured while someone is looking; it changes on every
     /// scan and would otherwise force a redraw each time.
     func scan(includeMemory: Bool = true) -> ScanResult {
         let began = Date()
-        load(Sys.processTable())
+        let processes = Sys.processTable()
+        guard !processes.isEmpty else {
+            return ScanResult(duration: Date().timeIntervalSince(began), error: "Porthole could not read the process list. Refresh to try again.")
+        }
+        load(processes)
 
         var listening: [pid_t: [SocketListener]] = [:]
         for p in table.values where p.uid == me && p.pid != selfPID {
@@ -53,10 +90,11 @@ final class Scanner: @unchecked Sendable {
         // A server that spawns listening workers (Firebase emulators, Next.js)
         // shows up once, under its topmost listening process.
         var members: [pid_t: [pid_t]] = [:]
-        for pid in listening.keys {
+        for pid in listening.keys.sorted() {
             var root = pid
             var cursor = table[pid]?.ppid ?? 0
-            while !isBoundary(cursor) {
+            var visited: Set<pid_t> = [pid]
+            while !isBoundary(cursor), visited.insert(cursor).inserted {
                 if listening[cursor] != nil { root = cursor }
                 cursor = table[cursor]?.ppid ?? 0
             }
@@ -64,15 +102,32 @@ final class Scanner: @unchecked Sendable {
         }
 
         var result = ScanResult()
-        for (root, group) in members {
+        for root in members.keys.sorted() {
+            let group = (members[root] ?? []).sorted()
+            let rootDetail = detail(root)
+            if Docker.isForwarder(exe: rootDetail.exe, comm: table[root]?.comm ?? "") {
+                // A Docker/OrbStack forwarder holds ports on behalf of containers;
+                // split it into one row per container, attributed by `docker ps`.
+                for server in makeDockerServers(root: root, members: group, listening: listening, includeMemory: includeMemory) {
+                    if server.kind == .dev {
+                        if let index = result.servers.firstIndex(where: { $0.id == server.id }) {
+                            var existing = result.servers[index]
+                            existing.ports = Array(Set(existing.ports + server.ports)).sorted { ($0.port, $0.addresses.joined()) < ($1.port, $1.addresses.joined()) }
+                            result.servers[index] = existing
+                        } else { result.servers.append(server) }
+                    } else { result.others.append(server) }
+                }
+                continue
+            }
             guard let server = makeServer(root: root, members: group, listening: listening, includeMemory: includeMemory) else { continue }
             if server.kind == .dev { result.servers.append(server) } else { result.others.append(server) }
         }
-        result.servers.sort { ($0.primaryPort, $0.pid) < ($1.primaryPort, $1.pid) }
-        result.others.sort { ($0.primaryPort, $0.pid) < ($1.primaryPort, $1.pid) }
+        result.servers.sort { ($0.primaryPort, $0.id) < ($1.primaryPort, $1.id) }
+        result.others.sort { ($0.primaryPort, $0.id) < ($1.primaryPort, $1.id) }
 
         let live = Set(table.values.map { "\($0.pid)-\($0.start)" })
         detailCache = detailCache.filter { live.contains($0.key) }
+        cpuCache = cpuCache.filter { Date().timeIntervalSince($0.value.at) < 60 }
         result.duration = Date().timeIntervalSince(began)
         return result
     }
@@ -80,7 +135,7 @@ final class Scanner: @unchecked Sendable {
     func load(_ newTable: [pid_t: KProc]) {
         table = newTable
         children = [:]
-        for p in table.values { children[p.ppid, default: []].append(p.pid) }
+        for p in table.values.sorted(by: { $0.pid < $1.pid }) { children[p.ppid, default: []].append(p.pid) }
         selfAncestors = []
         var cursor = selfPID
         while cursor > 1, let p = table[cursor], !selfAncestors.contains(cursor) {
@@ -90,9 +145,10 @@ final class Scanner: @unchecked Sendable {
     }
 
     func detail(_ pid: pid_t) -> ProcDetail {
+        if let detailProvider { return detailProvider(pid) }
         guard let p = table[pid] else { return ProcDetail(exe: "", args: [], env: [:], cwd: nil) }
         let key = "\(pid)-\(p.start)"
-        if let cached = detailCache[key] { return cached }
+        if let cached = detailCache[key], ProcessInfo.processInfo.systemUptime - cached.at < 10 { return cached.detail }
 
         let mine = p.uid == me
         let cmd = mine ? Sys.commandLine(pid, buffer: &argBuffer, keepEnv: { Catalog.envKeysOfInterest.contains($0) }) : nil
@@ -105,8 +161,18 @@ final class Scanner: @unchecked Sendable {
         // Young processes may still rename themselves (process.title), so only
         // cache once they have settled.
         let age = Date().timeIntervalSince1970 - TimeInterval(p.start) / 1_000_000
-        if age > 5 { detailCache[key] = d }
+        if age > 5 { detailCache[key] = (d, ProcessInfo.processInfo.systemUptime) }
         return d
+    }
+
+    func ancestry(of pid: pid_t) -> [ProcessIdentity] {
+        var cursor = table[pid]?.ppid ?? 0
+        var seen: Set<pid_t> = [pid]
+        var out: [ProcessIdentity] = []
+        while cursor > 1, seen.insert(cursor).inserted, let p = table[cursor] {
+            out.append(ProcessIdentity(pid: cursor, start: p.start)); cursor = p.ppid
+        }
+        return out
     }
 
     // MARK: - Process tree
@@ -117,7 +183,7 @@ final class Scanner: @unchecked Sendable {
     func isBoundary(_ pid: pid_t) -> Bool {
         guard pid > 1, let p = table[pid], p.uid == me, !selfAncestors.contains(pid) else { return true }
         let d = detail(pid)
-        if ownerDef(for: pid) != nil || isAppBundle(d.exe) { return true }
+        if ownerDef(for: pid) != nil || (isAppBundle(d.exe) && !isCommandLineRuntime(d)) || Docker.isForwarder(exe: d.exe, comm: p.comm) { return true }
         return isInteractiveShell(d)
     }
 
@@ -127,6 +193,11 @@ final class Scanner: @unchecked Sendable {
         // `sh -c "vite"` exists only to run one command, so it is not a boundary.
         let runsCommand = d.args.dropFirst().contains { $0.range(of: #"^-[a-zA-Z]*c[a-zA-Z]*$"#, options: .regularExpression) != nil }
         return !runsCommand
+    }
+
+    func isCommandLineRuntime(_ detail: ProcDetail) -> Bool {
+        guard !detail.exe.hasPrefix("/System/"), detail.args.count > 1 else { return false }
+        return ["python", "python3", "node", "bun", "deno", "ruby", "php", "java", "dotnet"].contains(Frameworks.basename(detail.exe))
     }
 
     func isAppBundle(_ exe: String) -> Bool {
@@ -151,17 +222,19 @@ final class Scanner: @unchecked Sendable {
     /// ends the whole job, the way Ctrl-C would. Stops at anything shared.
     func topOfJob(_ root: pid_t) -> pid_t {
         var top = root
-        while let parent = table[top]?.ppid, !isBoundary(parent), (children[parent] ?? []).count == 1 {
+        var visited: Set<pid_t> = [root]
+        while let parent = table[top]?.ppid, !isBoundary(parent), (children[parent] ?? []).count == 1, visited.insert(parent).inserted {
             top = parent
         }
         return top
     }
 
-    func descendants(of pid: pid_t) -> [pid_t] {
+    func descendants(of pid: pid_t, respectingBoundaries: Bool = false) -> [pid_t] {
         var out: [pid_t] = []
         var stack = children[pid] ?? []
         while let next = stack.popLast() {
             guard next != selfPID, !selfAncestors.contains(next), !out.contains(next) else { continue }
+            if respectingBoundaries && isBoundary(next) { continue }
             out.append(next)
             stack.append(contentsOf: children[next] ?? [])
         }
@@ -172,7 +245,7 @@ final class Scanner: @unchecked Sendable {
     func path(from top: pid_t, to root: pid_t) -> [pid_t] {
         var chain: [pid_t] = [root]
         var cursor = root
-        while cursor != top, let parent = table[cursor]?.ppid, parent > 1 {
+        while cursor != top, let parent = table[cursor]?.ppid, parent > 1, !chain.contains(parent) {
             chain.insert(parent, at: 0)
             cursor = parent
         }

@@ -93,6 +93,14 @@ enum Sys {
         return info.pti_resident_size
     }
 
+    /// Total CPU time (user + system) in nanoseconds, for diffing between scans.
+    static func cpuNanoseconds(_ pid: pid_t) -> UInt64 {
+        var info = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &info, size) == size else { return 0 }
+        return info.pti_total_user + info.pti_total_system
+    }
+
     /// TCP sockets in LISTEN state owned by `pid`.
     static func listeners(_ pid: pid_t) -> [SocketListener] {
         let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
@@ -124,8 +132,7 @@ enum Sys {
                 address = ntop(AF_INET6, &a, Int(INET6_ADDRSTRLEN))
             }
             let loopback = address.hasPrefix("127.") || address == "::1" || address.hasPrefix("::ffff:127.")
-            let wildcard = address == "0.0.0.0" || address == "::"
-            out.append(SocketListener(port: port, address: wildcard ? "*" : address, isLoopback: loopback))
+            out.append(SocketListener(port: port, address: address, isLoopback: loopback))
         }
         return out
     }

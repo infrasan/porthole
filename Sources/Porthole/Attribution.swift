@@ -19,11 +19,7 @@ extension Scanner {
         let job = chain + tree.filter { !chain.contains($0) }
         let envs = job.map { detail($0).env }
 
-        var byPort: [Int: Bool] = [:]
-        for socket in members.flatMap({ listening[$0] ?? [] }) {
-            byPort[socket.port] = (byPort[socket.port] ?? false) || !socket.isLoopback
-        }
-        let ports = byPort.keys.sorted().map { PortBinding(port: $0, isExposed: byPort[$0]!) }
+        let ports = PortBinding.collect(members.flatMap { listening[$0] ?? [] })
 
         var (owner, orphaned) = attribute(top: top, envs: envs)
         if kind != .dev { orphaned = false }
@@ -40,7 +36,10 @@ extension Scanner {
         let temp = ["/private/tmp/", "/tmp/", "/private/var/folders/"].contains { (dir ?? "").hasPrefix($0) }
         let projectName = temp && !project.fromManifest ? (scriptName(d) ?? project.name) : project.name
         let name = appName ?? brew ?? projectName ?? framework?.name ?? Frameworks.basename(d.exe)
+        let group = kind == .dev ? group(for: dir) : nil
+        let launchSpec = kind == .dev && brew == nil ? LaunchSpec.capture(detail(top)) : nil
         return DevServer(
+            rowID: nil,
             pid: root,
             start: rootProc.start,
             kind: kind,
@@ -53,11 +52,91 @@ extension Scanner {
             isOrphaned: orphaned,
             launchedVia: launchedVia(chain: chain, envs: envs),
             brewService: brew,
+            dockerContainer: nil,
             chain: chain.map { ChainLink(pid: $0, label: label(for: $0)) },
             childCount: tree.count - chain.count,
             memory: includeMemory ? tree.reduce(0) { $0 + Sys.residentBytes($1) } : 0,
-            note: note
+            cpuPercent: includeMemory ? cpuPercent(id: "\(root)-\(rootProc.start)", tree: tree) : nil,
+            note: note,
+            launchSpec: launchSpec,
+            groupID: group?.id,
+            groupName: group?.name,
+            stopDisabledReason: kind == .system ? "macOS manages this process. Change its system setting instead." : nil,
+            launchAncestors: ancestry(of: root)
         )
+    }
+
+    /// The project a server belongs to: its git root when there is one, else
+    /// the folder it runs in. Drives grouping in the panel.
+    func group(for dir: String?) -> (id: String, name: String)? {
+        guard let dir, dir != "/", dir != home else { return nil }
+        var cursor = dir
+        for _ in 0..<6 {
+            if FileManager.default.fileExists(atPath: (cursor as NSString).appendingPathComponent(".git")) {
+                return (cursor, (cursor as NSString).lastPathComponent)
+            }
+            let parent = (cursor as NSString).deletingLastPathComponent
+            if parent == cursor || parent == home || parent == "/" { break }
+            cursor = parent
+        }
+        return (dir, (dir as NSString).lastPathComponent)
+    }
+
+    // MARK: - Docker containers
+
+    /// One row per container behind a Docker/OrbStack port forwarder, so each
+    /// container gets its own name, framework, and Stop button (`docker stop`).
+    /// Signaling the forwarder itself would cut networking for every container,
+    /// so unmatched ports render as a tool row with Stop disabled.
+    func makeDockerServers(root: pid_t, members: [pid_t], listening: [pid_t: [SocketListener]], includeMemory: Bool) -> [DevServer] {
+        guard let rootProc = table[root] else { return [] }
+        let sockets = members.flatMap { listening[$0] ?? [] }
+        let inventory = dockerContainers(executable: detail(root).exe, comm: rootProc.comm)
+        var claimed: Set<SocketListener> = []
+        var servers: [DevServer] = []
+        for container in inventory.containers {
+            let mine = sockets.filter { socket in
+                let matches = inventory.containers.filter { $0.bindings.contains { $0.matches(socket) } }
+                return matches.count == 1 && matches.first?.id == container.id
+            }
+            guard !mine.isEmpty else { continue }
+            claimed.formUnion(mine)
+            // Use the published addresses instead of an aggregate forwarder's wildcard.
+            let bindings = container.bindings.filter { binding in mine.contains { binding.matches($0) } }
+            let ports = PortBinding.collect(bindings.map {
+                let host = $0.host.isEmpty ? "0.0.0.0" : $0.host
+                return SocketListener(port: $0.port, address: host, isLoopback: PortBinding.isLoopback(host))
+            })
+            let imageBase = (container.image.split(separator: "/").last.map(String.init) ?? container.image).split(separator: ":").first.map(String.init) ?? container.image
+            let aliases = ["redis": "redis-server", "valkey": "valkey-server", "postgresql": "postgres", "mysql": "mysqld", "mariadb": "mariadbd", "mongo": "mongod"]
+            let framework = Frameworks.detect(commands: [[aliases[imageBase] ?? imageBase]], dependencies: [])
+            servers.append(DevServer(
+                rowID: "docker-" + LaunchSpec.digest(container.daemon.socketPath) + "-" + container.id,
+                pid: root, start: rootProc.start, kind: .dev, name: container.name, framework: framework,
+                ports: ports, cwd: nil, command: "Docker image: " + container.image,
+                owner: Owner(id: "docker", name: "Docker", kind: .service, color: 0x1D63ED,
+                             evidence: "Published by the local container \"\(container.name)\" (\(container.image))."),
+                isOrphaned: false, launchedVia: nil, brewService: nil, dockerContainer: container.id,
+                chain: [], childCount: 0, memory: 0, cpuPercent: nil,
+                note: "Stop affects only this container. Activity for the shared forwarder is not container activity.",
+                launchSpec: nil, groupID: nil, groupName: nil, stopDisabledReason: nil, dockerDaemon: container.daemon
+            ))
+        }
+        let unclaimed = sockets.filter { !claimed.contains($0) }
+        if !unclaimed.isEmpty {
+            let reason = inventory.error ?? "These ports could not be matched to one local TCP container."
+            servers.append(DevServer(
+                rowID: "docker-forwarder-\(root)-\(rootProc.start)", pid: root, start: rootProc.start, kind: .tool,
+                name: "Docker port forwarder", framework: nil, ports: PortBinding.collect(unclaimed), cwd: nil,
+                command: "Shared Docker port forwarding",
+                owner: Owner(id: "docker", name: "Docker", kind: .service, color: 0x1D63ED, evidence: reason),
+                isOrphaned: false, launchedVia: nil, brewService: nil, dockerContainer: nil,
+                chain: [], childCount: 0, memory: includeMemory ? Sys.residentBytes(root) : 0, cpuPercent: nil,
+                note: reason, launchSpec: nil, groupID: nil, groupName: nil,
+                stopDisabledReason: "This process serves multiple containers. Stop a container in Docker instead."
+            ))
+        }
+        return servers
     }
 
     // MARK: - Who started it
@@ -150,6 +229,9 @@ extension Scanner {
         if command.contains("KotlinCompileDaemon") || command.contains("kotlin-daemon") || (d.cwd ?? "").hasSuffix("kotlin/daemon") {
             return (.tool, "Kotlin daemon", "Restarts on the next build.")
         }
+        // macOS Python and other CLI runtimes can live inside an app/framework.
+        // Their server jobs are still development processes, not the owning IDE.
+        if isCommandLineRuntime(d) { return (.dev, nil, nil) }
         if isAppBundle(exe) || exe.hasPrefix("/Library/") {
             return (.app, bundleName(exe) ?? table[pid]?.comm, nil)
         }
@@ -243,9 +325,11 @@ extension Scanner {
     func launchedVia(chain: [pid_t], envs: [[String: String]]) -> String? {
         for pid in chain {
             let title = detail(pid).args.first ?? ""
+            if CommandPrivacy.isSensitive(title) { return "[redacted command]" }
             if title.hasPrefix("npm exec ") { return "npx " + title.dropFirst("npm exec ".count).trimmingCharacters(in: .whitespaces) }
         }
         if let event = envs.lazy.compactMap({ $0["npm_lifecycle_event"] }).first, event != "npx" {
+            if CommandPrivacy.isSensitive(event) { return "[redacted command]" }
             let agent = envs.lazy.compactMap { $0["npm_config_user_agent"] }.first ?? "npm/"
             let pm = String(agent.split(separator: "/").first ?? "npm")
             return pm == "npm" || pm == "bun" ? "\(pm) run \(event)" : "\(pm) \(event)"
@@ -256,6 +340,7 @@ extension Scanner {
     func label(for pid: pid_t) -> String {
         let d = detail(pid)
         guard let first = d.args.first else { return table[pid]?.comm ?? "?" }
+        if CommandPrivacy.hasSecrets(d.args) { return Frameworks.basename(d.exe) + " [redacted arguments]" }
         if first.contains(" ") { return first.trimmingCharacters(in: .whitespaces) }
         let binary = Frameworks.basename(first)
         if binary == "java", let main = d.args.last(where: { $0.range(of: #"^[a-z]\w*(\.\w+)+$"#, options: .regularExpression) != nil }) {

@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+enum PanelStyle {
+    static let width: CGFloat = 400
+    static let gutter: CGFloat = 12
+    static let rowRadius: CGFloat = 9
+    static let panelRadius: CGFloat = 10
+}
+
 extension Color {
     init(hex: UInt32) {
         self.init(.sRGB,
@@ -43,9 +50,11 @@ enum Format {
     }
 }
 
-/// The menu bar glyph: a porthole. The glass fills in while servers are running.
+/// The menu bar glyph: a porthole. The glass fills in while servers are
+/// running (or, for a pinned server, while it's answering). A small dot on the
+/// rim marks orphaned servers.
 enum MenuBarIcon {
-    static func image(active: Bool) -> NSImage {
+    static func image(filled: Bool, badge: Bool = false) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { rect in
             let c = CGPoint(x: rect.midX, y: rect.midY)
             NSColor.black.set()
@@ -58,11 +67,15 @@ enum MenuBarIcon {
                 NSBezierPath(ovalIn: CGRect(x: c.x + r * cos(a) - 0.8, y: c.y + r * sin(a) - 0.8, width: 1.6, height: 1.6)).fill()
             }
             let glass = NSBezierPath(ovalIn: CGRect(x: c.x - 3, y: c.y - 3, width: 6, height: 6))
-            if active {
+            if filled {
                 glass.fill()
             } else {
                 glass.lineWidth = 1.1
                 glass.stroke()
+            }
+            if badge {
+                let dot = NSBezierPath(ovalIn: CGRect(x: rect.maxX - 5, y: rect.maxY - 5, width: 4, height: 4))
+                dot.fill()
             }
             return true
         }
@@ -77,7 +90,7 @@ struct OwnerMark: View {
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: 9, weight: .semibold))
+            .font(.system(size: 10, weight: .semibold))
             .foregroundStyle(tint)
             .frame(width: 11)
     }
@@ -127,6 +140,7 @@ private struct IconButtonBody: View {
 
 /// A text button that asks for a second click before doing something drastic.
 struct ConfirmButton: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let title: String
     let confirmTitle: String
     var tint: Color = .red
@@ -141,7 +155,7 @@ struct ConfirmButton: View {
             }
         } label: {
             Text(armed ? confirmTitle : title)
-                .font(.system(size: 11.5, weight: armed ? .semibold : .medium))
+                .font(.system(size: 11, weight: armed ? .semibold : .medium))
                 .foregroundStyle(armed ? Color.white : tint)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 4)
@@ -149,7 +163,7 @@ struct ConfirmButton: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.12), value: armed)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: armed)
     }
 }
 

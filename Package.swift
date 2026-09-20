@@ -8,6 +8,7 @@ let package = Package(
         .executableTarget(
             name: "Porthole",
             path: "Sources/Porthole"
-        )
+        ),
+        .testTarget(name: "PortholeTests", dependencies: ["Porthole"])
     ]
 )
