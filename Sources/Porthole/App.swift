@@ -150,7 +150,7 @@ final class PanelController: NSObject, NSWindowDelegate {
         super.init()
         panel.delegate = self
         sizeObserver = hosting.observe(\.preferredContentSize, options: [.new]) { [weak self] hosting, _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 guard let self, self.panel.isVisible else { return }
                 self.resizeToFit(size: hosting.preferredContentSize, keepTop: true)
             }

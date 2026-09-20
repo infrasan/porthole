@@ -19,6 +19,8 @@ final class WorkflowTests: XCTestCase {
 
     func testLiveStopLeavesSiblingProcessRunning() async throws {
         let sibling = Process(), target = Process()
+        let targetExited = expectation(description: "Foundation observes the target exit")
+        target.terminationHandler = { _ in targetExited.fulfill() }
         for child in [sibling, target] {
             child.executableURL = URL(fileURLWithPath: "/bin/sleep")
             child.arguments = ["30"]
@@ -32,6 +34,9 @@ final class WorkflowTests: XCTestCase {
         let server = fixtureServer(pid: target.processIdentifier, start: start)
         let outcome = await Stopper.stop(server, force: false, protectedServices: [])
         XCTAssertEqual(outcome, .stopped(forced: false))
+        XCTAssertFalse(Sys.isAlive(target.processIdentifier, start: start))
+        // Kernel disappearance can precede Foundation's asynchronous exit callback.
+        await fulfillment(of: [targetExited], timeout: 2)
         XCTAssertFalse(target.isRunning)
         XCTAssertTrue(sibling.isRunning)
     }

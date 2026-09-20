@@ -149,7 +149,9 @@ final class Store: ObservableObject {
         guard live else { return }
         timer?.invalidate()
         let interval: TimeInterval = isPanelOpen ? 2 : 5
-        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in Task { @MainActor in self?.refresh() } }
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.refresh() }
+        }
         timer?.tolerance = interval / 4
     }
 

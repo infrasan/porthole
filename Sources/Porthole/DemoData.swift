@@ -74,10 +74,15 @@ enum DemoData {
                    kind: .tool, note: "Restarts on the next build."),
         ]
         if let count {
-            result.servers = (0..<min(100, max(0, count))).map { index in
-                server(pid_t(900000 + index), Double(index + 1), "demo-service-\(index + 1)", fw("Vite"), [10000 + index],
-                       owner: owner("codex", "Demo process. No real process is controlled."),
-                       via: "npm run dev", chain: [(pid_t(900000 + index), "node vite")])
+            let rowCount = min(100, max(0, count))
+            let demoOwner = owner("codex", "Demo process. No real process is controlled.")
+            let framework = fw("Vite")
+            result.servers = (0..<rowCount).map { index -> DevServer in
+                let pid = pid_t(900000 + index)
+                let name = "demo-service-\(index + 1)"
+                let ports: [Int] = [10000 + index]
+                return server(pid, Double(index + 1), name, framework, ports,
+                              owner: demoOwner, via: "npm run dev", chain: [(pid, "node vite")])
             }
             if count == 0 { result.others = [] }
         }
