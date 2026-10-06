@@ -178,15 +178,19 @@ final class WorkflowTests: XCTestCase {
         let file = directory.appendingPathComponent("instance.lock")
         // A disposable process stands in for the Porthole that is already running.
         let holder = Process(), ready = Pipe()
+        let holderExited = expectation(description: "the lock holder exits")
+        holder.terminationHandler = { _ in holderExited.fulfill() }
         holder.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
         holder.arguments = ["-c", "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(30)", file.path]
         holder.standardOutput = ready
         try holder.run()
-        defer { if holder.isRunning { holder.terminate(); holder.waitUntilExit() } }
+        defer { if holder.isRunning { holder.terminate() } }
+        // Returns at the latest when the holder exits after 30 s.
         XCTAssertEqual(String(decoding: ready.fileHandleForReading.availableData, as: UTF8.self), "locked\n")
         XCTAssertFalse(SingleInstance.acquire(file))
         // A crash must not leave a stale lock behind.
-        kill(holder.processIdentifier, SIGKILL); holder.waitUntilExit()
+        kill(holder.processIdentifier, SIGKILL)
+        wait(for: [holderExited], timeout: 5)
         XCTAssertTrue(SingleInstance.acquire(file))
     }
 
@@ -226,13 +230,18 @@ final class WorkflowTests: XCTestCase {
         // A plain child is not a Mac app that can be asked to quit, so the app
         // path must fall back to the normal signal escalation.
         let child = Process()
+        let exited = expectation(description: "Foundation observes the child exit")
+        child.terminationHandler = { _ in exited.fulfill() }
         child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["30"]
+        child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
         try child.run()
-        defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
+        // Never block on Foundation's exit callback from an async test; it can lag the kernel.
+        defer { if child.isRunning { child.terminate() } }
         let start = try XCTUnwrap(Sys.startTime(child.processIdentifier))
         let outcome = await Stopper.stop(fixtureServer(pid: child.processIdentifier, start: start, kind: .app), force: false, protectedServices: [])
         XCTAssertEqual(outcome, .stopped(forced: false))
         XCTAssertFalse(Sys.isAlive(child.processIdentifier, start: start))
+        await fulfillment(of: [exited], timeout: 2)
     }
 
     func testDockerInventoryRefreshesWhenForwarderPortsChange() {

@@ -4,7 +4,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/verification
 swift build -Xswiftc -warnings-as-errors
-swift test -Xswiftc -warnings-as-errors | tee build/verification/tests.log
+# Unbuffered, so a hung test is visible in CI logs instead of lost with the pipe buffer.
+NSUnbufferedIO=YES swift test -Xswiftc -warnings-as-errors | tee build/verification/tests.log
 .build/debug/Porthole --bench | tee build/verification/bench.log
 .build/debug/Porthole --json > build/verification/scan.json
 chmod 600 build/verification/scan.json
