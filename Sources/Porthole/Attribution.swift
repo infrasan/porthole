@@ -149,6 +149,9 @@ extension Scanner {
         for _ in 0..<64 {
             if cursor <= 1 { reachedLaunchd = true; break }
             guard let p = table[cursor] else { reachedLaunchd = true; break }
+            // Launches run as Porthole's children with a minimal environment;
+            // walking past Porthole would call them orphaned and unowned.
+            if cursor == selfPID { return (.porthole("Started by Porthole (pid \(cursor))."), false) }
             if let def = ownerDef(for: cursor) {
                 if def.kind == .agent {
                     return (owner(def, "Started by \(def.name), which is still running (pid \(cursor))."), false)

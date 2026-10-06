@@ -14,6 +14,7 @@ python3 scripts/soak.py               # three-minute live soak with disposable l
 .build/debug/Porthole --bench        # scan timing; must stay "stable between scans: true"
 .build/debug/Porthole --snapshot out.png --demo --dark   # render the panel to an image
 PORTHOLE_OPEN_PANEL=1 /path/to/Porthole.app/Contents/MacOS/Porthole   # DEBUG-only: open the panel at launch for screenshot tests
+PORTHOLE_ALLOW_SECOND_INSTANCE=1 build/Porthole.app/Contents/MacOS/Porthole   # run beside an installed copy (smoke/soak harnesses)
 ```
 
 Regression tests live in `Tests/PortholeTests/`. Verification is the commands above plus a live run; process tests must only signal jobs they created. Never ship a change that fails `--bench`'s stability check or crashes a live soak.
@@ -54,6 +55,7 @@ SwiftPM executable, no third-party dependencies, app target in `Sources/Porthole
 10. **Protection is enforced at execution.** `Stopper.refusal` runs before every stop/restart manager action. Bulk, accessibility and CLI paths must not bypass it.
 11. **Launch success requires ownership.** Every expected port must belong to the launched pid/start or its descendant, or the same managed service. Preserve failed recipes and logs.
 12. **Probes never follow redirects.** Only numeric loopback addresses; HTTPS verifies certificates, and health keys include process identity, address, port and protocol.
+13. **One live instance per user.** `SingleInstance` holds an `flock` (opened `O_CLOEXEC`, so launched servers never inherit it) before the app starts; a second launch posts a distributed notification so the running copy shows its panel, then exits. CLI modes (`--dump`, `--json`, `--stop`, `--bench`, `--snapshot`) and the inert DEBUG demo panel never take the lock.
 
 ## Adding things
 

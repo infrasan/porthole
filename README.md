@@ -36,11 +36,11 @@ Download `Porthole-<version>.dmg` from the [latest release](https://github.com/i
 
 Requires macOS 14 or later.
 
-See [the changelog](CHANGELOG.md) for release changes. To update, quit Porthole, replace the copy in Applications, then reopen it. Preferences and saved recipes remain in your user Library; there is no automatic updater.
+See [the changelog](CHANGELOG.md) for release changes. Only one copy runs at a time; opening Porthole while it is already running shows its panel. To update, quit Porthole, replace the copy in Applications, then reopen it. Preferences and saved recipes remain in your user Library; there is no automatic updater.
 
 ## Build from source
 
-Open `Porthole.xcodeproj` in Xcode 16 or later and press ⌘R.
+Open `Porthole.xcodeproj` in Xcode 16 or later and press ⌘R. Quit any installed Porthole first: a second copy hands off to the running one and exits. Test harnesses that must run beside it set `PORTHOLE_ALLOW_SECOND_INSTANCE=1`.
 
 Or from the terminal:
 

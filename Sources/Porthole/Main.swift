@@ -71,6 +71,7 @@ enum Main {
             return
         }
         if args.contains("--stop") || args.contains("--snapshot") { fputs("Provide a valid port or snapshot path.\n", stderr); exit(2) }
+        if SingleInstance.handOff() { return }
         PortholeApp.main()
     }
 

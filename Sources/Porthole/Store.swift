@@ -288,7 +288,7 @@ final class Store: ObservableObject {
         cancelProbes(); triggerProbes()
     }
     func pin(_ server: DevServer, port: Int? = nil) {
-        guard live else { return }
+        guard live, server.kind == .dev else { return }
         pinned = PinnedService(serviceID: server.serviceID, name: server.name, port: port ?? server.primaryPort)
         defaults?.set(try? JSONEncoder().encode(pinned), forKey: "pinnedService")
         cancelProbes(); triggerProbes()
@@ -424,7 +424,7 @@ final class Store: ObservableObject {
         launchTasks[recent.id]?.cancel(); launchTasks[recent.id] = nil
         let pending = DevServer(rowID: nil, pid: handle.identity.pid, start: handle.identity.start, kind: .dev, name: recent.name,
                                 framework: nil, ports: [], cwd: recent.launchSpec?.directory, command: recent.command ?? "",
-                                owner: Owner(id: "porthole", name: "Porthole", kind: .app, color: 0, evidence: "Started here"),
+                                owner: .porthole("Started here"),
                                 isOrphaned: false, launchedVia: nil, brewService: nil, dockerContainer: nil, chain: [], childCount: 0,
                                 memory: 0, cpuPercent: nil, note: nil, launchSpec: recent.launchSpec, groupID: recent.groupID,
                                 groupName: recent.groupName, stopDisabledReason: nil)

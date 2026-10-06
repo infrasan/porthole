@@ -67,6 +67,11 @@ struct Owner: Hashable {
     let evidence: String
 
     var isAgent: Bool { kind == .agent }
+
+    /// Servers Porthole itself started or restarted from a launch recipe.
+    static func porthole(_ evidence: String) -> Owner {
+        Owner(id: "porthole", name: "Porthole", kind: .app, color: 0x8E8E93, evidence: evidence)
+    }
 }
 
 struct Framework: Hashable {

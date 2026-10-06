@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Only one Porthole runs per user. Launching it again — from another copy, a second login item, `open -n` or a debug build — opens the running copy's panel instead of adding a second menu bar icon that doubled scans and probes, lost the ⌃⌥P shortcut and overwrote saved recents. Reopening the running app from Finder or Spotlight also shows the panel.
+- Servers started or restarted from Porthole are attributed to Porthole instead of being flagged as orphaned with an unknown owner, so they no longer trigger orphan notifications, the menu bar badge or **Stop orphaned**.
+- Apps and system listeners no longer offer **Pin in menu bar**; such a pin could never be matched and showed the port as not listening.
+
 ## 0.2.0 — 2026-09-20
 
 ### Added

@@ -173,6 +173,41 @@ final class WorkflowTests: XCTestCase {
         XCTAssertTrue(LaunchReadiness.matches(ready, recent: recent, identity: ready.identity))
     }
 
+    func testSecondInstanceCannotTakeLaunchLockUntilTheHolderDies() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("instance.lock")
+        // A disposable process stands in for the Porthole that is already running.
+        let holder = Process(), ready = Pipe()
+        holder.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        holder.arguments = ["-c", "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(30)", file.path]
+        holder.standardOutput = ready
+        try holder.run()
+        defer { if holder.isRunning { holder.terminate(); holder.waitUntilExit() } }
+        XCTAssertEqual(String(decoding: ready.fileHandleForReading.availableData, as: UTF8.self), "locked\n")
+        XCTAssertFalse(SingleInstance.acquire(file))
+        // A crash must not leave a stale lock behind.
+        kill(holder.processIdentifier, SIGKILL); holder.waitUntilExit()
+        XCTAssertTrue(SingleInstance.acquire(file))
+    }
+
+    func testServersPortholeLaunchedAreOwnedByPortholeNotOrphaned() {
+        let scanner = Scanner()
+        scanner.load([scanner.selfPID: process(scanner.selfPID), 900001: process(900001, parent: scanner.selfPID)])
+        scanner.detailProvider = { _ in ProcDetail(exe: "/usr/bin/python3", args: ["/usr/bin/python3", "-m", "http.server"], env: [:], cwd: "/tmp") }
+        let (owner, orphaned) = scanner.attribute(top: 900001, envs: [[:]])
+        XCTAssertEqual(owner.id, "porthole")
+        XCTAssertFalse(orphaned)
+    }
+
+    @MainActor func testOnlyDevServersCanBePinned() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let store = Store(history: History(persistent: false), defaults: UserDefaults(suiteName: "PortholeTests-" + UUID().uuidString),
+                          stateDirectory: directory, launchLogDirectory: directory)
+        defer { store.shutdown() }
+        store.pin(fixtureServer(kind: .app)); XCTAssertNil(store.pinned)
+        store.pin(fixtureServer()); XCTAssertNotNil(store.pinned)
+    }
+
     func testDiagnosticsRedactCommandsWithoutCapturingEnvironments() throws {
         let detail = ProcDetail(exe: "/bin/echo", args: ["echo", "--token", "private-value"], env: [:], cwd: "/tmp")
         let json = try Diagnostics.data(ScanResult(servers: [fixtureServer(spec: nil)]))
