@@ -91,7 +91,11 @@ extension Scanner {
     func makeDockerServers(root: pid_t, members: [pid_t], listening: [pid_t: [SocketListener]], includeMemory: Bool) -> [DevServer] {
         guard let rootProc = table[root] else { return [] }
         let sockets = members.flatMap { listening[$0] ?? [] }
-        let inventory = dockerContainers(executable: detail(root).exe, comm: rootProc.comm)
+        // `docker ps` + `inspect` are two processes per call. Refetch when the
+        // forwarder's ports change; otherwise every 5 s while the panel is open
+        // and once a minute in the background.
+        if forwarderChanged(root, start: rootProc.start, sockets: sockets) { invalidateDockerInventory() }
+        let inventory = dockerContainers(executable: detail(root).exe, comm: rootProc.comm, maxAge: includeMemory ? 5 : 60)
         var claimed: Set<SocketListener> = []
         var servers: [DevServer] = []
         for container in inventory.containers {

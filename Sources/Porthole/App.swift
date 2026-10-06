@@ -7,8 +7,10 @@ struct PortholeApp: App {
 
     var body: some Scene {
         // The app lives in the menu bar; the delegate owns the status item and
-        // panel. This scene exists so SwiftUI has an App body at all.
+        // panel. This scene exists so SwiftUI has an App body at all; its
+        // Settings… command would open an empty window on ⌘, so it is removed.
         Settings { EmptyView() }
+            .commands { CommandGroup(replacing: .appSettings) {} }
     }
 }
 
@@ -206,6 +208,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         super.init()
         panel.delegate = self
+        store.closePanel = { [weak self] in self?.close() }
         sizeObserver = hosting.observe(\.preferredContentSize, options: [.new]) { [weak self] hosting, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.panel.isVisible else { return }

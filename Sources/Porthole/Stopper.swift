@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum StopOutcome: Equatable {
@@ -22,6 +23,17 @@ enum Stopper {
             return await Docker.action(force ? "kill" : "stop", container: container, daemon: server.dockerDaemon)
         }
         guard Sys.isAlive(server.pid, start: server.start) else { return .gone }
+
+        // Signals end a Mac app on the spot and lose unsaved work. Ask it to
+        // quit instead, and never escalate: it may be asking to save changes.
+        // Background-only helpers often ignore the request, so they keep signals.
+        if server.kind == .app, !force, let app = NSRunningApplication(processIdentifier: server.pid),
+           app.activationPolicy != .prohibited {
+            guard app.terminate() else { return .failed("\(server.name) did not accept the request to quit.") }
+            let exited = await waitForExit({ Sys.isAlive(server.pid, start: server.start) ? [server.identity] : [] }, seconds: 10)
+            return exited ? .stopped(forced: false)
+                : .failed("\(server.name) has not quit. It may be asking to save changes; use Force quit to end it now.")
+        }
 
         // Rebuild the job from a fresh process table, so we signal exactly what
         // exists now and never a pid that has since been reused.

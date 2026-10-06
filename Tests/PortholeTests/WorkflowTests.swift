@@ -208,6 +208,52 @@ final class WorkflowTests: XCTestCase {
         store.pin(fixtureServer()); XCTAssertNotNil(store.pinned)
     }
 
+    func testAppRowWithoutAQuittableAppStillStopsWithSignals() async throws {
+        // A plain child is not a Mac app that can be asked to quit, so the app
+        // path must fall back to the normal signal escalation.
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["30"]
+        try child.run()
+        defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
+        let start = try XCTUnwrap(Sys.startTime(child.processIdentifier))
+        let outcome = await Stopper.stop(fixtureServer(pid: child.processIdentifier, start: start, kind: .app), force: false, protectedServices: [])
+        XCTAssertEqual(outcome, .stopped(forced: false))
+        XCTAssertFalse(Sys.isAlive(child.processIdentifier, start: start))
+    }
+
+    func testDockerInventoryRefreshesWhenForwarderPortsChange() {
+        let scanner = Scanner()
+        let web = SocketListener(port: 8000, address: "0.0.0.0", isLoopback: false)
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 10, sockets: [web]))
+        XCTAssertFalse(scanner.forwarderChanged(900001, start: 10, sockets: [web]))
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 10, sockets: []))
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 11, sockets: []))
+    }
+
+    func testRecipeEditorDropsTrailingBlankLinesButKeepsUneditedArgv() {
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "-m\nhttp.server\n8000\n", original: []), ["-m", "http.server", "8000"])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "a\n\nb", original: []), ["a", "", "b"])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: []), [])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: ["x"]), [])
+        // Captured argv may legitimately end with an empty argument.
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "a\n", original: ["a", ""]), ["a", ""])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: [""]), [""])
+    }
+
+    func testHistoryWriteFailureIsRetriedNotPermanent() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("recents.json")
+        let history = History(file: file)
+        // A folder where the file belongs makes the write fail.
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        history.add(fixtureServer())
+        XCTAssertNotNil(history.error)
+        try FileManager.default.removeItem(at: file)
+        history.add(fixtureServer())
+        XCTAssertNil(history.error)
+        XCTAssertEqual(try JSONDecoder().decode([RecentServer].self, from: Data(contentsOf: file)).count, 1)
+    }
+
     func testDiagnosticsRedactCommandsWithoutCapturingEnvironments() throws {
         let detail = ProcDetail(exe: "/bin/echo", args: ["echo", "--token", "private-value"], env: [:], cwd: "/tmp")
         let json = try Diagnostics.data(ScanResult(servers: [fixtureServer(spec: nil)]))

@@ -112,7 +112,10 @@ struct PanelView: View {
         if !store.query.isEmpty { store.query = ""; return .handled }
         if showSearch { showSearch = false; listFocused = true; return .handled }
         if expandedID != nil { withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) { expandedID = nil }; return .handled }
-        return .ignored
+        // Nothing left to clear: Escape closes the panel, like a menu.
+        guard let close = store.closePanel else { return .ignored }
+        close()
+        return .handled
     }
 
     /// Hidden buttons carrying the ⌘ shortcuts so they work anywhere in the panel.
@@ -148,7 +151,13 @@ struct PanelView: View {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Stop")
         alert.addButton(withTitle: "Cancel")
-        if alert.runModal() == .alertFirstButtonReturn { store.stop(server) }
+        // A sheet on the panel: a modal alert sits below the panel's pop-up
+        // menu level and can open hidden behind it.
+        guard let panel = NSApp.keyWindow else { return }
+        alert.beginSheetModal(for: panel) { [store] response in
+            guard response == .alertFirstButtonReturn else { return }
+            Task { @MainActor in store.stop(server) }
+        }
     }
 
     // MARK: - Header

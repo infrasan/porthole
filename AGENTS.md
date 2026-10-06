@@ -28,7 +28,7 @@ SwiftPM executable, no third-party dependencies, app target in `Sources/Porthole
 - `Attribution.swift` — `makeServer` builds a `DevServer`: classification, owner attribution, project naming, grouping, docker split. `makeDockerServers` turns port forwarders into per-container rows.
 - `Catalog.swift` — the table of known agents/editors/terminals and their env markers. Adding support for a new agent = one entry here.
 - `Frameworks.swift` — command-line tokens → framework name/color (`Frameworks.detect`).
-- `Stopper.swift` — SIGINT→SIGTERM→SIGKILL escalation for plain processes; `docker stop/kill/restart` for containers; `brew services` for Homebrew. Rechecks pid+start-time before every signal.
+- `Stopper.swift` — SIGINT→SIGTERM→SIGKILL escalation for plain processes; a normal, non-escalating quit request for Mac apps; `docker stop/kill/restart` for containers; `brew services` for Homebrew. Rechecks pid+start-time before every signal.
 - `Health.swift` — loopback probes: HTTP HEAD for web servers (any response = up), TCP connect for the rest.
 - `Store.swift` — `@MainActor` state hub: scan timer, health/notification fan-out, restart/start/recents, service/project pins, protection, reviewed recipes, editor/terminal openers.
 - `LaunchSpec.swift` / `Launcher.swift` — exact executable, argv and original cwd; direct exec with a minimal environment, private logs and retention. Never rebuild shell syntax from a display string.
@@ -48,7 +48,7 @@ SwiftPM executable, no third-party dependencies, app target in `Sources/Porthole
 4. **No `hidesOnDeactivate` on the panel.** When the app is activated from the background (hotkey), it isn't genuinely frontmost, and the flag hides the panel instantly. Closing is explicit: `applicationDidResignActive` + resign-key check, keeping the panel open while its own menus/alerts hold key status.
 5. **The panel is a custom NSPanel, not MenuBarExtra.** MenuBarExtra can't be opened programmatically, which the ⌃⌥P hotkey (Carbon `RegisterEventHotKey`, no Accessibility permission) requires. Panel height follows `NSHostingController.preferredContentSize` via KVO — don't reintroduce GeometryReader measuring; it races the layout.
 6. **Env parsing keeps only `Catalog.envKeysOfInterest`.** Everything else (API keys included) is discarded mid-parse. Never widen the set casually, never store full environments.
-7. **Probes are loopback-only and panel-gated.** All servers probe while the panel is open; in the background only the selected port of the pinned service is probed, so Porthole never spams a dev server's request log.
+7. **Probes are loopback-only and panel-gated.** All servers probe while the panel is open; in the background only the selected port of the pinned service is probed, at most every 30 s, so Porthole never spams a dev server's request log. Docker inventories follow the same idea: refetched when a forwarder's ports change, otherwise once a minute while the panel is closed.
 8. **Stop never climbs into a shell, terminal, editor, agent, or Porthole's own ancestry** (`Scanner.isBoundary`). `sh -c "…"` wrappers are walked through; interactive shells are not.
 9. **Snapshot mode is inert.** `Store(startTimer: false)` sets `live = false`: no probes, no notifications, no history writes. Keep it that way — screenshots must never touch user state.
 

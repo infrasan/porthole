@@ -146,12 +146,15 @@ struct ConfirmButton: View {
     var tint: Color = .red
     let action: () -> Void
     @State private var armed = false
+    @State private var armings = 0
 
     var body: some View {
         Button {
             if armed { armed = false; action() } else {
-                armed = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { armed = false }
+                armed = true; armings += 1
+                // Only this arming's timer may disarm; an earlier one would cut a re-arm short.
+                let arming = armings
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) { if armings == arming { armed = false } }
             }
         } label: {
             Text(armed ? confirmTitle : title)

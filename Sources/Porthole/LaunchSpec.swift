@@ -33,6 +33,16 @@ struct LaunchSpec: Codable, Hashable, Sendable {
         return nil
     }
 
+    /// Arguments from the recipe editor, one per line. Unedited text keeps the
+    /// exact argv, empty arguments included; edited text drops the blank lines
+    /// a trailing newline leaves, which would otherwise reach the program as ''.
+    static func argv(fromEditor text: String, original: [String]) -> [String] {
+        if text == original.joined(separator: "\n") { return original }
+        var lines = text.components(separatedBy: "\n")
+        while lines.last == "" { lines.removeLast() }
+        return lines
+    }
+
     var display: String { CommandPrivacy.display([executable] + arguments) }
     var fingerprint: String { Self.digest(([executable, directory] + arguments).joined(separator: "\0")) }
     static func digest(_ value: String) -> String {
