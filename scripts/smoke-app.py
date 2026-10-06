@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Check packaged-app startup, which --dump and preview stores do not exercise."""
+import os
 import pathlib
 import plistlib
 import subprocess
@@ -11,7 +12,9 @@ app = pathlib.Path(sys.argv[1]).resolve()
 with (app / 'Contents/Info.plist').open('rb') as stream:
     executable = plistlib.load(stream)['CFBundleExecutable']
 with tempfile.TemporaryFile() as log:
-    child = subprocess.Popen([str(app / 'Contents/MacOS' / executable)], stdout=log, stderr=log)
+    # Run beside any Porthole already open instead of handing off to it.
+    env = dict(os.environ, PORTHOLE_ALLOW_SECOND_INSTANCE='1')
+    child = subprocess.Popen([str(app / 'Contents/MacOS' / executable)], stdout=log, stderr=log, env=env)
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:

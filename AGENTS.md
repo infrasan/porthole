@@ -14,6 +14,7 @@ python3 scripts/soak.py               # three-minute live soak with disposable l
 .build/debug/Porthole --bench        # scan timing; must stay "stable between scans: true"
 .build/debug/Porthole --snapshot out.png --demo --dark   # render the panel to an image
 PORTHOLE_OPEN_PANEL=1 /path/to/Porthole.app/Contents/MacOS/Porthole   # DEBUG-only: open the panel at launch for screenshot tests
+PORTHOLE_ALLOW_SECOND_INSTANCE=1 build/Porthole.app/Contents/MacOS/Porthole   # run beside an installed copy (smoke/soak harnesses)
 ```
 
 Regression tests live in `Tests/PortholeTests/`. Verification is the commands above plus a live run; process tests must only signal jobs they created. Never ship a change that fails `--bench`'s stability check or crashes a live soak.
@@ -27,7 +28,7 @@ SwiftPM executable, no third-party dependencies, app target in `Sources/Porthole
 - `Attribution.swift` — `makeServer` builds a `DevServer`: classification, owner attribution, project naming, grouping, docker split. `makeDockerServers` turns port forwarders into per-container rows.
 - `Catalog.swift` — the table of known agents/editors/terminals and their env markers. Adding support for a new agent = one entry here.
 - `Frameworks.swift` — command-line tokens → framework name/color (`Frameworks.detect`).
-- `Stopper.swift` — SIGINT→SIGTERM→SIGKILL escalation for plain processes; `docker stop/kill/restart` for containers; `brew services` for Homebrew. Rechecks pid+start-time before every signal.
+- `Stopper.swift` — SIGINT→SIGTERM→SIGKILL escalation for plain processes; a normal, non-escalating quit request for Mac apps; `docker stop/kill/restart` for containers; `brew services` for Homebrew. Rechecks pid+start-time before every signal.
 - `Health.swift` — loopback probes: HTTP HEAD for web servers (any response = up), TCP connect for the rest.
 - `Store.swift` — `@MainActor` state hub: scan timer, health/notification fan-out, restart/start/recents, service/project pins, protection, reviewed recipes, editor/terminal openers.
 - `LaunchSpec.swift` / `Launcher.swift` — exact executable, argv and original cwd; direct exec with a minimal environment, private logs and retention. Never rebuild shell syntax from a display string.
@@ -47,13 +48,14 @@ SwiftPM executable, no third-party dependencies, app target in `Sources/Porthole
 4. **No `hidesOnDeactivate` on the panel.** When the app is activated from the background (hotkey), it isn't genuinely frontmost, and the flag hides the panel instantly. Closing is explicit: `applicationDidResignActive` + resign-key check, keeping the panel open while its own menus/alerts hold key status.
 5. **The panel is a custom NSPanel, not MenuBarExtra.** MenuBarExtra can't be opened programmatically, which the ⌃⌥P hotkey (Carbon `RegisterEventHotKey`, no Accessibility permission) requires. Panel height follows `NSHostingController.preferredContentSize` via KVO — don't reintroduce GeometryReader measuring; it races the layout.
 6. **Env parsing keeps only `Catalog.envKeysOfInterest`.** Everything else (API keys included) is discarded mid-parse. Never widen the set casually, never store full environments.
-7. **Probes are loopback-only and panel-gated.** All servers probe while the panel is open; in the background only the selected port of the pinned service is probed, so Porthole never spams a dev server's request log.
-8. **Stop never climbs into a shell, terminal, editor, agent, or Porthole's own ancestry** (`Scanner.isBoundary`). `sh -c "…"` wrappers are walked through; interactive shells are not.
+7. **Probes are loopback-only and panel-gated.** All servers probe while the panel is open; in the background only the selected port of the pinned service is probed, at most every 30 s, so Porthole never spams a dev server's request log. Docker inventories follow the same idea: refetched when a forwarder's ports change, otherwise once a minute while the panel is closed.
+8. **Stop never climbs into a shell, terminal, editor, agent, any Porthole process, or Porthole's own ancestry** (`Scanner.isBoundary`, `Scanner.isPorthole`). `sh -c "…"` wrappers are walked through; interactive shells are not. The app-quit path for Mac apps runs only after `StopPlan` has applied these checks.
 9. **Snapshot mode is inert.** `Store(startTimer: false)` sets `live = false`: no probes, no notifications, no history writes. Keep it that way — screenshots must never touch user state.
 
 10. **Protection is enforced at execution.** `Stopper.refusal` runs before every stop/restart manager action. Bulk, accessibility and CLI paths must not bypass it.
 11. **Launch success requires ownership.** Every expected port must belong to the launched pid/start or its descendant, or the same managed service. Preserve failed recipes and logs.
 12. **Probes never follow redirects.** Only numeric loopback addresses; HTTPS verifies certificates, and health keys include process identity, address, port and protocol.
+13. **One live instance per user.** `SingleInstance` holds an `flock` (opened `O_CLOEXEC`, so launched servers never inherit it) before the app starts; a second launch posts a distributed notification so the running copy shows its panel, then exits. CLI modes (`--dump`, `--json`, `--stop`, `--bench`, `--snapshot`) and the inert DEBUG demo panel never take the lock.
 
 ## Adding things
 

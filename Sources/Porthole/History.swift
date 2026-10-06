@@ -39,6 +39,8 @@ struct RecentServer: Codable, Identifiable, Equatable {
 final class History {
     private(set) var recents: [RecentServer] = []
     private(set) var error: String?
+    /// The saved file exists but could not be read; it is never overwritten.
+    private var unreadable = false
     let file: URL?
     init(file: URL? = History.defaultFile(), persistent: Bool = true) {
         self.file = persistent ? file : nil
@@ -83,13 +85,13 @@ final class History {
                 recents[index].launchSpec = nil
                 recents[index].failure = "Review this launch recipe before starting it."
             }
-        } catch { self.error = "Saved servers could not be read. Your existing file has been kept." }
+        } catch { unreadable = true; self.error = "Saved servers could not be read. Your existing file has been kept." }
     }
     private func save() {
-        guard let file else { return }
-        // Do not silently replace an unreadable history file.
-        guard error == nil else { return }
-        do { try PrivateStorage.write(JSONEncoder().encode(recents), to: file) }
+        // Do not silently replace an unreadable history file. A failed write is
+        // retried on the next change, and clears once one succeeds.
+        guard let file, !unreadable else { return }
+        do { try PrivateStorage.write(JSONEncoder().encode(recents), to: file); error = nil }
         catch { self.error = "Saved servers could not be written. Check folder permissions." }
     }
 }

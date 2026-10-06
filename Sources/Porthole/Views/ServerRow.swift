@@ -405,11 +405,14 @@ struct ServerMenu: View {
                 Button("Save launch recipe") { store.saveManagedRecipe(server) }
             } else { Button("Review launch recipe…") { store.editRecipe(server) } }
         }
-        Divider()
-        if store.pinned?.serviceID == server.serviceID {
-            Button("Unpin from menu bar") { store.unpin() }
-        } else {
-            Button("Pin in menu bar") { store.pin(server) }
+        // Pins follow dev servers; an app or system row could never be found again.
+        if server.kind == .dev {
+            Divider()
+            if store.pinned?.serviceID == server.serviceID {
+                Button("Unpin from menu bar") { store.unpin() }
+            } else {
+                Button("Pin in menu bar") { store.pin(server) }
+            }
         }
         Divider()
         if store.canRestart(server) {

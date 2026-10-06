@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum StopOutcome: Equatable {
@@ -34,6 +35,26 @@ enum Stopper {
         catch { return .failed(error.localizedDescription) }
         let top = targets.first?.pid ?? server.pid
         guard !targets.isEmpty else { return .gone }
+
+        // The plan above has already refused Porthole's ancestry, other users and
+        // shared processes. Signals end a Mac app on the spot and lose unsaved
+        // work, so ask it to quit and never escalate: it may be asking to save
+        // changes. Background-only helpers often ignore the request; they keep
+        // signals. Only a bundle's main executable is asked about, so plain
+        // processes never query LaunchServices, and the query runs on the main
+        // actor, where AppKit keeps running-app state current.
+        if server.kind == .app, !force, scanner.detail(server.pid).exe.contains(".app/Contents/MacOS/") {
+            let asked = await MainActor.run { () -> Bool? in
+                guard let app = NSRunningApplication(processIdentifier: server.pid), app.activationPolicy != .prohibited else { return nil }
+                return app.terminate()
+            }
+            if let asked {
+                guard asked else { return .failed("\(server.name) did not accept the request to quit.") }
+                let exited = await waitForExit({ Sys.isAlive(server.pid, start: server.start) ? [server.identity] : [] }, seconds: 10)
+                return exited ? .stopped(forced: false)
+                    : .failed("\(server.name) has not quit. It may be asking to save changes; use Force quit to end it now.")
+            }
+        }
 
         func alive() -> [ProcessIdentity] { targets.filter { Sys.isAlive($0.pid, start: $0.start) } }
 

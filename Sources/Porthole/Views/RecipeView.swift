@@ -47,7 +47,7 @@ struct RecipeView: View {
                 Spacer()
                 Button("Save recipe") {
                     let spec = LaunchSpec(executable: executable.trimmingCharacters(in: .whitespacesAndNewlines),
-                                          arguments: arguments.isEmpty ? [] : arguments.components(separatedBy: "\n"),
+                                          arguments: LaunchSpec.argv(fromEditor: arguments, original: draft.recent.launchSpec?.arguments ?? []),
                                           directory: directory.trimmingCharacters(in: .whitespacesAndNewlines))
                     if let reason = spec.validationError { error = reason; return }
                     guard FileManager.default.isExecutableFile(atPath: spec.executable) else { error = "Choose an executable file that exists on this Mac."; return }

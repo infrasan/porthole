@@ -39,7 +39,7 @@ def spawn():
     return process, port
 try:
     with (area / 'app.log').open('w') as log:
-        app = subprocess.Popen([str(binary)], stdout=log, stderr=log)
+        app = subprocess.Popen([str(binary)], stdout=log, stderr=log, env=dict(os.environ, PORTHOLE_ALLOW_SECOND_INSTANCE='1'))
         current = [spawn(), spawn()]
         while time.monotonic() - started < 180:
             assert app.poll() is None, 'App exited during soak'

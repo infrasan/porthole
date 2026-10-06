@@ -28,6 +28,7 @@ struct ProcDetail {
 final class Scanner: @unchecked Sendable {
     let me = getuid()
     let selfPID = getpid()
+    let selfExecutable = Sys.executablePath(getpid()) ?? ""
     let home = NSHomeDirectory()
 
     var table: [pid_t: KProc] = [:]
@@ -39,6 +40,8 @@ final class Scanner: @unchecked Sendable {
     private var argBuffer = [UInt8](repeating: 0, count: Sys.argMax())
     /// `docker ps` is only worth its cost when a forwarder is actually listening.
     private var dockerCache: [DockerDaemon: (inventory: DockerInventory, at: Date)] = [:]
+    /// What each forwarder (pid-start) listened on at the last scan.
+    private var forwarderSockets: [String: Set<SocketListener>] = [:]
     var dockerInventoryProvider: ((String, String) -> DockerInventory)?
     var detailProvider: ((pid_t) -> ProcDetail)?
     /// Previous CPU sample per server id, so a percent can be diffed.
@@ -46,15 +49,23 @@ final class Scanner: @unchecked Sendable {
 
     func invalidateDockerInventory() { dockerCache = [:] }
 
-    func dockerContainers(executable: String, comm: String) -> DockerInventory {
+    func dockerContainers(executable: String, comm: String, maxAge: TimeInterval = 5) -> DockerInventory {
         if let dockerInventoryProvider { return dockerInventoryProvider(executable, comm) }
         guard let daemon = DockerDaemon.resolve(executable: executable, comm: comm) else {
             return DockerInventory(error: "No local Docker connection was found. Open the container manager and refresh.")
         }
-        if let cached = dockerCache[daemon], Date().timeIntervalSince(cached.at) < 5 { return cached.inventory }
+        if let cached = dockerCache[daemon], Date().timeIntervalSince(cached.at) < maxAge { return cached.inventory }
         let inventory = Docker.containers(daemon: daemon)
         dockerCache[daemon] = (inventory, Date())
         return inventory
+    }
+
+    /// True when a forwarder listens on different sockets than at the last
+    /// scan, which means a container started or stopped.
+    func forwarderChanged(_ root: pid_t, start: Int64, sockets: [SocketListener]) -> Bool {
+        let key = "\(root)-\(start)", current = Set(sockets)
+        defer { forwarderSockets[key] = current }
+        return forwarderSockets[key] != current
     }
 
     /// Percent of one core used since the previous scan (may exceed 100).
@@ -127,6 +138,7 @@ final class Scanner: @unchecked Sendable {
 
         let live = Set(table.values.map { "\($0.pid)-\($0.start)" })
         detailCache = detailCache.filter { live.contains($0.key) }
+        forwarderSockets = forwarderSockets.filter { live.contains($0.key) }
         cpuCache = cpuCache.filter { Date().timeIntervalSince($0.value.at) < 60 }
         result.duration = Date().timeIntervalSince(began)
         return result
@@ -183,8 +195,16 @@ final class Scanner: @unchecked Sendable {
     func isBoundary(_ pid: pid_t) -> Bool {
         guard pid > 1, let p = table[pid], p.uid == me, !selfAncestors.contains(pid) else { return true }
         let d = detail(pid)
-        if ownerDef(for: pid) != nil || (isAppBundle(d.exe) && !isCommandLineRuntime(d)) || Docker.isForwarder(exe: d.exe, comm: p.comm) { return true }
+        if isPorthole(pid) || ownerDef(for: pid) != nil || (isAppBundle(d.exe) && !isCommandLineRuntime(d)) || Docker.isForwarder(exe: d.exe, comm: p.comm) { return true }
         return isInteractiveShell(d)
+    }
+
+    /// This process or another copy of Porthole, such as the menu bar app seen
+    /// from `--dump` or `--stop`, or a build outside /Applications.
+    func isPorthole(_ pid: pid_t) -> Bool {
+        if pid == selfPID { return true }
+        let exe = detail(pid).exe
+        return !exe.isEmpty && (exe == selfExecutable || exe.hasSuffix("/Porthole.app/Contents/MacOS/Porthole"))
     }
 
     func isInteractiveShell(_ d: ProcDetail) -> Bool {

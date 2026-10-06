@@ -91,7 +91,11 @@ extension Scanner {
     func makeDockerServers(root: pid_t, members: [pid_t], listening: [pid_t: [SocketListener]], includeMemory: Bool) -> [DevServer] {
         guard let rootProc = table[root] else { return [] }
         let sockets = members.flatMap { listening[$0] ?? [] }
-        let inventory = dockerContainers(executable: detail(root).exe, comm: rootProc.comm)
+        // `docker ps` + `inspect` are two processes per call. Refetch when the
+        // forwarder's ports change; otherwise every 5 s while the panel is open
+        // and once a minute in the background.
+        if forwarderChanged(root, start: rootProc.start, sockets: sockets) { invalidateDockerInventory() }
+        let inventory = dockerContainers(executable: detail(root).exe, comm: rootProc.comm, maxAge: includeMemory ? 5 : 60)
         var claimed: Set<SocketListener> = []
         var servers: [DevServer] = []
         for container in inventory.containers {
@@ -149,6 +153,9 @@ extension Scanner {
         for _ in 0..<64 {
             if cursor <= 1 { reachedLaunchd = true; break }
             guard let p = table[cursor] else { reachedLaunchd = true; break }
+            // Launches run as Porthole's children with a minimal environment;
+            // walking past Porthole would call them orphaned and unowned.
+            if isPorthole(cursor) { return (.porthole("Started by Porthole (pid \(cursor))."), false) }
             if let def = ownerDef(for: cursor) {
                 if def.kind == .agent {
                     return (owner(def, "Started by \(def.name), which is still running (pid \(cursor))."), false)

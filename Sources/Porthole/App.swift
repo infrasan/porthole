@@ -7,8 +7,10 @@ struct PortholeApp: App {
 
     var body: some Scene {
         // The app lives in the menu bar; the delegate owns the status item and
-        // panel. This scene exists so SwiftUI has an App body at all.
+        // panel. This scene exists so SwiftUI has an App body at all; its
+        // Settings… command would open an empty window on ⌘, so it is removed.
         Settings { EmptyView() }
+            .commands { CommandGroup(replacing: .appSettings) {} }
     }
 }
 
@@ -18,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var panelController: PanelController!
     private var cancellables: Set<AnyCancellable> = []
+    private var handOffObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         UserDefaults.standard.register(defaults: ["showCount": true])
@@ -45,6 +48,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotKeyManager.shared.onFire = { [weak self] in self?.panelController.toggle() }
         if store.live { HotKeyManager.shared.registerIfEnabled() }
         if let error = HotKeyManager.shared.error { store.actionError = error }
+        if store.live {
+            // A second launch exits and asks this copy to show its panel instead.
+            handOffObserver = DistributedNotificationCenter.default().addObserver(forName: SingleInstance.showPanel, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.panelController.show()
+                }
+            }
+        }
 
         // objectWillChange fires mid-update; hop to the next runloop tick so the
         // menu bar reads settled state.
@@ -63,6 +75,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func statusItemClicked() {
         panelController.toggle()
+    }
+
+    /// Opening Porthole again from Finder, Spotlight or a login item shows the
+    /// panel; a menu bar app has no window for macOS to bring forward.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        panelController?.show()
+        return false
     }
 
     /// Clicking away dismisses the panel — but only when none of our own
@@ -93,6 +112,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let count = servers.count
             button.toolTip = count == 0 ? "Porthole — no dev servers" : "Porthole — \(count) dev \(count == 1 ? "server" : "servers")"
         }
+    }
+}
+
+/// One live Porthole per user. A second copy (another path, a login item plus
+/// a manual launch, `open -n`, a debug build) would double every scan and
+/// probe, lose ⌃⌥P to the first copy and overwrite its saved recents.
+enum SingleInstance {
+    /// Posted by a second launch so the running copy opens its panel.
+    static let showPanel = Notification.Name("io.github.infrasan.porthole.show-panel")
+    static var lockFile: URL { History.defaultFile().deletingLastPathComponent().appendingPathComponent("instance.lock") }
+
+    /// True when another Porthole is already running: it has been asked to
+    /// show its panel and this process should exit. Inert DEBUG demo panels and
+    /// test harnesses (PORTHOLE_ALLOW_SECOND_INSTANCE) never take the lock.
+    static func handOff() -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        #if DEBUG
+        if environment["PORTHOLE_DEMO_PANEL"] != nil { return false }
+        #endif
+        guard environment["PORTHOLE_ALLOW_SECOND_INSTANCE"] == nil, !acquire() else { return false }
+        // Delivered even though a menu bar app is never the active app.
+        DistributedNotificationCenter.default().postNotificationName(showPanel, object: nil, userInfo: nil, deliverImmediately: true)
+        fputs("Porthole is already running; its panel was opened instead.\n", stderr)
+        return true
+    }
+
+    /// Takes the per-user launch lock and keeps its descriptor open for the
+    /// life of the process. The kernel releases it on exit or crash, so a stale
+    /// file never blocks a launch. False only when another live process holds
+    /// it; if locking itself fails, Porthole starts rather than refusing to.
+    static func acquire(_ file: URL = lockFile) -> Bool {
+        try? PrivateStorage.prepareDirectory(file.deletingLastPathComponent())
+        // O_CLOEXEC: servers Porthole launches must not inherit the lock and
+        // keep holding it after Porthole quits.
+        let fd = open(file.path, O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return true }
+        if flock(fd, LOCK_EX | LOCK_NB) == 0 { return true }
+        let held = errno == EWOULDBLOCK
+        close(fd)
+        return !held
     }
 }
 
@@ -149,6 +208,7 @@ final class PanelController: NSObject, NSWindowDelegate {
 
         super.init()
         panel.delegate = self
+        store.closePanel = { [weak self] in self?.close() }
         sizeObserver = hosting.observe(\.preferredContentSize, options: [.new]) { [weak self] hosting, _ in
             Task { @MainActor [weak self] in
                 guard let self, self.panel.isVisible else { return }

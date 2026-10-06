@@ -21,7 +21,7 @@ Coding agents start servers and leave them running. After a week you have a Next
 - **Stops the whole job, like Ctrl-C would.** Stop on a Next.js row ends `npm run dev`, `next dev` and `next-server` together, so nothing respawns.
 - **Knows the special cases.** `brew services` get `brew services stop` instead of a kill that launchd would undo. macOS's AirPlay Receiver on port 5000 comes with instructions for turning it off.
 - **Warns when a server is exposed** to everyone on your network, not just you — with the LAN address for opening it on your phone.
-- **Lives in the keyboard.** ⌃⌥P toggles the panel from anywhere, ↑/↓ move between servers, → expands, ⌘O opens, ⌘⇧C copies the URL, ⌘⌫ stops, ⌘F searches.
+- **Lives in the keyboard.** ⌃⌥P toggles the panel from anywhere, ↑/↓ move between servers, → expands, ⌘O opens, ⌘⇧C copies the URL, ⌘⌫ stops, ⌘F searches, Esc closes.
 - **Can watch for you.** Pin a service or project. A project pin follows an available service in that project; its dot reports that service's selected port. Optional notifications when a server appears, stops, or becomes orphaned are off by default.
 - **Protects important services.** Choose **Protect service** from a row's menu to exclude it from stop, restart, force quit and bulk actions, including CLI stop. Protection persists across process restarts.
 - **Remembers launch recipes.** Save project recipes from the project menu, then use **Start project** in the saved list. Edit executable, arguments, working folder and expected ports. Search includes saved and recently stopped services.
@@ -36,11 +36,11 @@ Download `Porthole-<version>.dmg` from the [latest release](https://github.com/i
 
 Requires macOS 14 or later.
 
-See [the changelog](CHANGELOG.md) for release changes. To update, quit Porthole, replace the copy in Applications, then reopen it. Preferences and saved recipes remain in your user Library; there is no automatic updater.
+See [the changelog](CHANGELOG.md) for release changes. Only one copy runs at a time; opening Porthole while it is already running shows its panel. To update, quit Porthole, replace the copy in Applications, then reopen it. Preferences and saved recipes remain in your user Library; there is no automatic updater.
 
 ## Build from source
 
-Open `Porthole.xcodeproj` in Xcode 16 or later and press ⌘R.
+Open `Porthole.xcodeproj` in Xcode 16 or later and press ⌘R. Quit any installed Porthole first: a second copy hands off to the running one and exits. Test harnesses that must run beside it set `PORTHOLE_ALLOW_SECOND_INSTANCE=1`.
 
 Or from the terminal:
 
@@ -83,7 +83,7 @@ Ports published by Docker Desktop or OrbStack are different: the listening socke
 
 ### Health
 
-Each server gets a probe on loopback: a HEAD request for things that speak HTTP (any response counts, even a 500 — the point is the process answers), a TCP connect for databases and other non-HTTP services. Green means answering (with the response time in the details), red means the port listens but nothing answers, grey means not checked. Probes run while the panel is open; in the background, only the selected port of a pinned service is probed, so nothing spams your servers' logs while you're not looking.
+Each server gets a probe on loopback: a HEAD request for things that speak HTTP (any response counts, even a 500 — the point is the process answers), a TCP connect for databases and other non-HTTP services. Green means answering (with the response time in the details), red means the port listens but nothing answers, grey means not checked. Probes run while the panel is open; in the background, only the selected port of a pinned service is probed, every 30 seconds, so nothing spams your servers' logs while you're not looking.
 
 HTTP redirects are not followed, so a local redirect cannot make a probe contact an external address. IPv4 and IPv6 bindings are preserved. A listener bound only to a LAN address is marked unavailable for loopback probing. HTTPS checks verify certificates; an untrusted local certificate is shown as unavailable, not silently accepted. Unknown protocols default to TCP; use the per-port selector when a web server is not recognized. HTTP “up” means it answered, not that its application or dependencies are healthy.
 
@@ -98,6 +98,8 @@ Servers sharing a git root (or, without git, a working directory) group under on
 3. Sends SIGTERM to anything still running after 4 seconds, and SIGKILL after 2 more.
 
 Before each signal it checks the process's start time, so a reused PID never gets signaled. Option-click Stop, or use **Force quit**, to send SIGKILL right away.
+
+Apps under **Apps and system** are different: **Quit** asks the app to quit the normal macOS way, so it can save its work, and never escalates. If it is still running after 10 seconds (for example, waiting on a save dialog), use **Force quit**.
 
 ## Privacy
 

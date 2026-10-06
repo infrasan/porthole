@@ -173,6 +173,110 @@ final class WorkflowTests: XCTestCase {
         XCTAssertTrue(LaunchReadiness.matches(ready, recent: recent, identity: ready.identity))
     }
 
+    func testSecondInstanceCannotTakeLaunchLockUntilTheHolderDies() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("instance.lock")
+        // A disposable process stands in for the Porthole that is already running.
+        let holder = Process(), ready = Pipe()
+        let holderExited = expectation(description: "the lock holder exits")
+        holder.terminationHandler = { _ in holderExited.fulfill() }
+        holder.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+        holder.arguments = ["-c", "import fcntl, sys, time\nf = open(sys.argv[1], 'w')\nfcntl.flock(f, fcntl.LOCK_EX)\nprint('locked', flush=True)\ntime.sleep(30)", file.path]
+        holder.standardOutput = ready
+        try holder.run()
+        defer { if holder.isRunning { holder.terminate() } }
+        // Returns at the latest when the holder exits after 30 s.
+        XCTAssertEqual(String(decoding: ready.fileHandleForReading.availableData, as: UTF8.self), "locked\n")
+        XCTAssertFalse(SingleInstance.acquire(file))
+        // A crash must not leave a stale lock behind.
+        kill(holder.processIdentifier, SIGKILL)
+        wait(for: [holderExited], timeout: 5)
+        XCTAssertTrue(SingleInstance.acquire(file))
+    }
+
+    func testServersPortholeLaunchedAreOwnedByPortholeNotOrphaned() {
+        let scanner = Scanner()
+        scanner.load([scanner.selfPID: process(scanner.selfPID), 900001: process(900001, parent: scanner.selfPID)])
+        scanner.detailProvider = { _ in ProcDetail(exe: "/usr/bin/python3", args: ["/usr/bin/python3", "-m", "http.server"], env: [:], cwd: "/tmp") }
+        let (owner, orphaned) = scanner.attribute(top: 900001, envs: [[:]])
+        XCTAssertEqual(owner.id, "porthole")
+        XCTAssertFalse(orphaned)
+    }
+
+    func testRunningAppIsOwnerAndBoundaryWhenSeenFromTheCLI() {
+        // --dump/--stop run as a separate process; the menu bar app is not selfPID there.
+        let scanner = Scanner()
+        scanner.load([900000: process(900000), 900001: process(900001, parent: 900000)])
+        scanner.detailProvider = { pid in
+            pid == 900000 ? ProcDetail(exe: "/Users/you/code/porthole/build/Porthole.app/Contents/MacOS/Porthole", args: ["Porthole"], env: [:], cwd: "/")
+                : ProcDetail(exe: "/usr/bin/python3", args: ["/usr/bin/python3", "-m", "http.server"], env: [:], cwd: "/tmp")
+        }
+        let (owner, orphaned) = scanner.attribute(top: 900001, envs: [[:]])
+        XCTAssertEqual(owner.id, "porthole"); XCTAssertFalse(orphaned)
+        XCTAssertTrue(scanner.isBoundary(900000))
+        XCTAssertEqual(scanner.topOfJob(900001), 900001)
+    }
+
+    @MainActor func testOnlyDevServersCanBePinned() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let store = Store(history: History(persistent: false), defaults: UserDefaults(suiteName: "PortholeTests-" + UUID().uuidString),
+                          stateDirectory: directory, launchLogDirectory: directory)
+        defer { store.shutdown() }
+        store.pin(fixtureServer(kind: .app)); XCTAssertNil(store.pinned)
+        store.pin(fixtureServer()); XCTAssertNotNil(store.pinned)
+    }
+
+    func testAppRowWithoutAQuittableAppStillStopsWithSignals() async throws {
+        // A plain child is not a Mac app that can be asked to quit, so the app
+        // path must fall back to the normal signal escalation.
+        let child = Process()
+        let exited = expectation(description: "Foundation observes the child exit")
+        child.terminationHandler = { _ in exited.fulfill() }
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["30"]
+        child.standardOutput = FileHandle.nullDevice; child.standardError = FileHandle.nullDevice
+        try child.run()
+        // Never block on Foundation's exit callback from an async test; it can lag the kernel.
+        defer { if child.isRunning { child.terminate() } }
+        let start = try XCTUnwrap(Sys.startTime(child.processIdentifier))
+        let outcome = await Stopper.stop(fixtureServer(pid: child.processIdentifier, start: start, kind: .app), force: false, protectedServices: [])
+        XCTAssertEqual(outcome, .stopped(forced: false))
+        XCTAssertFalse(Sys.isAlive(child.processIdentifier, start: start))
+        await fulfillment(of: [exited], timeout: 2)
+    }
+
+    func testDockerInventoryRefreshesWhenForwarderPortsChange() {
+        let scanner = Scanner()
+        let web = SocketListener(port: 8000, address: "0.0.0.0", isLoopback: false)
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 10, sockets: [web]))
+        XCTAssertFalse(scanner.forwarderChanged(900001, start: 10, sockets: [web]))
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 10, sockets: []))
+        XCTAssertTrue(scanner.forwarderChanged(900001, start: 11, sockets: []))
+    }
+
+    func testRecipeEditorDropsTrailingBlankLinesButKeepsUneditedArgv() {
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "-m\nhttp.server\n8000\n", original: []), ["-m", "http.server", "8000"])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "a\n\nb", original: []), ["a", "", "b"])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: []), [])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: ["x"]), [])
+        // Captured argv may legitimately end with an empty argument.
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "a\n", original: ["a", ""]), ["a", ""])
+        XCTAssertEqual(LaunchSpec.argv(fromEditor: "", original: [""]), [""])
+    }
+
+    func testHistoryWriteFailureIsRetriedNotPermanent() throws {
+        let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("recents.json")
+        let history = History(file: file)
+        // A folder where the file belongs makes the write fail.
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: true)
+        history.add(fixtureServer())
+        XCTAssertNotNil(history.error)
+        try FileManager.default.removeItem(at: file)
+        history.add(fixtureServer())
+        XCTAssertNil(history.error)
+        XCTAssertEqual(try JSONDecoder().decode([RecentServer].self, from: Data(contentsOf: file)).count, 1)
+    }
+
     func testDiagnosticsRedactCommandsWithoutCapturingEnvironments() throws {
         let detail = ProcDetail(exe: "/bin/echo", args: ["echo", "--token", "private-value"], env: [:], cwd: "/tmp")
         let json = try Diagnostics.data(ScanResult(servers: [fixtureServer(spec: nil)]))

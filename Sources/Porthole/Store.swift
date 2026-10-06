@@ -72,6 +72,9 @@ final class Store: ObservableObject {
     private var protocolOverrides: [String: String] = [:]
     private var launches: [UUID: LaunchHandle] = [:]
     private var launchTasks: [UUID: Task<Void, Never>] = [:]
+    private var reportedHistoryError: String?
+    /// Set by the panel's controller; Escape uses it once nothing else is left to dismiss.
+    var closePanel: (() -> Void)?
     private var eventsFile: URL? {
         live ? stateDirectory.appendingPathComponent("events.json") : nil
     }
@@ -192,7 +195,11 @@ final class Store: ObservableObject {
     private func triggerProbes() {
         guard live, probeTask == nil else { return }
         let now = Date()
-        let due = probeTargets.filter { now.timeIntervalSince(lastProbeAt[$0.key] ?? .distantPast) > 4 }
+        // In the background only the pinned port is checked, and only twice a
+        // minute: every scan would put a line in its request log (or, for
+        // Postgres, an "incomplete startup packet") every few seconds.
+        let interval: TimeInterval = isPanelOpen ? 4 : 30
+        let due = probeTargets.filter { now.timeIntervalSince(lastProbeAt[$0.key] ?? .distantPast) > interval }
         guard !due.isEmpty else { return }
         for target in due { lastProbeAt[target.key] = now; if health[target.key] == nil { health[target.key] = .checking } }
         let generation = probeGeneration
@@ -288,7 +295,7 @@ final class Store: ObservableObject {
         cancelProbes(); triggerProbes()
     }
     func pin(_ server: DevServer, port: Int? = nil) {
-        guard live else { return }
+        guard live, server.kind == .dev else { return }
         pinned = PinnedService(serviceID: server.serviceID, name: server.name, port: port ?? server.primaryPort)
         defaults?.set(try? JSONEncoder().encode(pinned), forKey: "pinnedService")
         cancelProbes(); triggerProbes()
@@ -321,7 +328,9 @@ final class Store: ObservableObject {
             if case .failed(let message) = outcome { errors[server.id] = message; actionError = message }
             else {
                 if server.dockerContainer != nil { invalidateContainerCache() }
-                history.add(server); syncHistory(); stoppedAt[server.id] = Date()
+                // Quitting an app or tool leaves nothing Porthole could start again.
+                if server.kind == .dev { history.add(server); syncHistory() }
+                stoppedAt[server.id] = Date()
                 servers.removeAll { $0.id == server.id }; others.removeAll { $0.id == server.id }
                 record(LifecycleEvent(kind: "stopped", name: server.name, port: server.primaryPort))
             }
@@ -424,7 +433,7 @@ final class Store: ObservableObject {
         launchTasks[recent.id]?.cancel(); launchTasks[recent.id] = nil
         let pending = DevServer(rowID: nil, pid: handle.identity.pid, start: handle.identity.start, kind: .dev, name: recent.name,
                                 framework: nil, ports: [], cwd: recent.launchSpec?.directory, command: recent.command ?? "",
-                                owner: Owner(id: "porthole", name: "Porthole", kind: .app, color: 0, evidence: "Started here"),
+                                owner: .porthole("Started here"),
                                 isOrphaned: false, launchedVia: nil, brewService: nil, dockerContainer: nil, chain: [], childCount: 0,
                                 memory: 0, cpuPercent: nil, note: nil, launchSpec: recent.launchSpec, groupID: recent.groupID,
                                 groupName: recent.groupName, stopDisabledReason: nil)
@@ -444,7 +453,11 @@ final class Store: ObservableObject {
             if let failure = recent.failure { recentErrors[recent.id] = failure }
             if let log = recent.logPath { recentLogs[recent.id] = URL(fileURLWithPath: log) }
         }
-        if let error = history.error { actionError = error }
+        // Report each persistence problem once; a dismissed banner stays dismissed.
+        if history.error != reportedHistoryError {
+            reportedHistoryError = history.error
+            if let error = history.error { actionError = error }
+        }
     }
     func removeRecent(_ id: UUID) {
         guard live, !starting.contains(id), launches[id]?.process.isRunning != true else { return }

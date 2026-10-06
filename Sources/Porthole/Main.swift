@@ -26,15 +26,15 @@ enum Main {
             print("Stopping \(server.name): \(server.chain.map { "\($0.label) (\($0.pid))" }.joined(separator: " → "))")
             guard server.canStop else { print(server.stopDisabledReason ?? "This process cannot be stopped."); exit(1) }
             let began = Date()
-            let done = DispatchSemaphore(value: 0)
             Task.detached {
                 let outcome = await Stopper.stop(server, force: args.contains("--force"))
                 print("\(outcome) in \(String(format: "%.1f", Date().timeIntervalSince(began))) s")
                 if case .failed = outcome { exit(1) }
-                done.signal()
+                exit(0)
             }
-            done.wait()
-            return
+            // Park the main thread on the main queue, not a semaphore, so work the
+            // stop does on the main actor (asking an app to quit) can still run.
+            dispatchMain()
         }
         if args.contains("--bench") {
             let scanner = Scanner()
@@ -71,6 +71,7 @@ enum Main {
             return
         }
         if args.contains("--stop") || args.contains("--snapshot") { fputs("Provide a valid port or snapshot path.\n", stderr); exit(2) }
+        if SingleInstance.handOff() { return }
         PortholeApp.main()
     }
 
