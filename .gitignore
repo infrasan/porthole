@@ -4,3 +4,4 @@
 build/
 *.dmg
 xcuserdata/
+__pycache__/

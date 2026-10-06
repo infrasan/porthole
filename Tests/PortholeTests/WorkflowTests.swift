@@ -199,6 +199,20 @@ final class WorkflowTests: XCTestCase {
         XCTAssertFalse(orphaned)
     }
 
+    func testRunningAppIsOwnerAndBoundaryWhenSeenFromTheCLI() {
+        // --dump/--stop run as a separate process; the menu bar app is not selfPID there.
+        let scanner = Scanner()
+        scanner.load([900000: process(900000), 900001: process(900001, parent: 900000)])
+        scanner.detailProvider = { pid in
+            pid == 900000 ? ProcDetail(exe: "/Users/you/code/porthole/build/Porthole.app/Contents/MacOS/Porthole", args: ["Porthole"], env: [:], cwd: "/")
+                : ProcDetail(exe: "/usr/bin/python3", args: ["/usr/bin/python3", "-m", "http.server"], env: [:], cwd: "/tmp")
+        }
+        let (owner, orphaned) = scanner.attribute(top: 900001, envs: [[:]])
+        XCTAssertEqual(owner.id, "porthole"); XCTAssertFalse(orphaned)
+        XCTAssertTrue(scanner.isBoundary(900000))
+        XCTAssertEqual(scanner.topOfJob(900001), 900001)
+    }
+
     @MainActor func testOnlyDevServersCanBePinned() throws {
         let directory = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: directory) }
         let store = Store(history: History(persistent: false), defaults: UserDefaults(suiteName: "PortholeTests-" + UUID().uuidString),

@@ -28,6 +28,7 @@ struct ProcDetail {
 final class Scanner: @unchecked Sendable {
     let me = getuid()
     let selfPID = getpid()
+    let selfExecutable = Sys.executablePath(getpid()) ?? ""
     let home = NSHomeDirectory()
 
     var table: [pid_t: KProc] = [:]
@@ -194,8 +195,16 @@ final class Scanner: @unchecked Sendable {
     func isBoundary(_ pid: pid_t) -> Bool {
         guard pid > 1, let p = table[pid], p.uid == me, !selfAncestors.contains(pid) else { return true }
         let d = detail(pid)
-        if ownerDef(for: pid) != nil || (isAppBundle(d.exe) && !isCommandLineRuntime(d)) || Docker.isForwarder(exe: d.exe, comm: p.comm) { return true }
+        if isPorthole(pid) || ownerDef(for: pid) != nil || (isAppBundle(d.exe) && !isCommandLineRuntime(d)) || Docker.isForwarder(exe: d.exe, comm: p.comm) { return true }
         return isInteractiveShell(d)
+    }
+
+    /// This process or another copy of Porthole, such as the menu bar app seen
+    /// from `--dump` or `--stop`, or a build outside /Applications.
+    func isPorthole(_ pid: pid_t) -> Bool {
+        if pid == selfPID { return true }
+        let exe = detail(pid).exe
+        return !exe.isEmpty && (exe == selfExecutable || exe.hasSuffix("/Porthole.app/Contents/MacOS/Porthole"))
     }
 
     func isInteractiveShell(_ d: ProcDetail) -> Bool {
